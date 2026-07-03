@@ -55,13 +55,21 @@ try {
 }
 
 # 3) How many CA events actually exist in the log, and how old are they?
+# NOTE: query by EventID range (2 expressions), NOT a FilterHashtable Id array.
+# The event-log query limit is 23 expressions; the 31-ID CA range 4868..4898
+# exceeds it and silently matches NOTHING via -FilterHashtable Id. A range
+# query avoids that; we post-filter for any non-contiguous -EventId subset.
 Section 'CA events present in the log'
+$minId = ($EventId | Measure-Object -Minimum).Minimum
+$maxId = ($EventId | Measure-Object -Maximum).Maximum
+$xpath = "*[System[(EventID>=$minId and EventID<=$maxId)]]"
 $all = @()
 try {
-    $all = @(Get-WinEvent -FilterHashtable @{ LogName = $LogName; Id = $EventId } -ErrorAction Stop)
+    $all = @(Get-WinEvent -LogName $LogName -FilterXPath $xpath -ErrorAction Stop |
+        Where-Object { $EventId -contains $_.Id })
 } catch {
     if ($_.Exception.Message -match 'No events were found') {
-        Write-Host "ZERO events with IDs $($EventId[0])..$($EventId[-1]) in '$LogName'." -ForegroundColor Red
+        Write-Host "ZERO events with IDs $minId..$maxId in '$LogName'." -ForegroundColor Red
         Write-Host "-> Either auditing is off (see above) or you're looking at a different log." -ForegroundColor Yellow
     } else { throw }
 }
