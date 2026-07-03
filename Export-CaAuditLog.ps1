@@ -107,6 +107,8 @@ param(
     [ValidateRange(1, 8760)]
     [int]$InitialLookbackHours = 24,
 
+    [switch]$BackfillAll,
+
     [string]$StateFile,
 
     [ValidateRange(0, [int]::MaxValue)]
@@ -218,18 +220,23 @@ if ($null -ne $checkpoint -and $checkpoint.PSObject.Properties['LastRecordId']) 
         # to guarantee we never miss or repeat an event on the boundary.
         $startTime = $lastTime.AddSeconds(-2)
     }
+} elseif ($BackfillAll) {
+    # First run, no time floor: capture every matching event still in the log.
+    $startTime = $null
+    Write-Log 'No checkpoint and -BackfillAll set; exporting ALL matching events currently in the log.'
 } else {
     $startTime = (Get-Date).ToUniversalTime().AddHours(-$InitialLookbackHours)
-    Write-Log "No usable checkpoint; first run looking back $InitialLookbackHours hour(s) to $($startTime.ToString('o'))."
+    Write-Log "No usable checkpoint; first run looking back $InitialLookbackHours hour(s) to $($startTime.ToString('o')). Use -BackfillAll to capture older events."
 }
 
 # --- Query the log ---------------------------------------------------------
 
 $filter = @{
-    LogName   = $LogName
-    Id        = $EventId
-    StartTime = $startTime
+    LogName = $LogName
+    Id      = $EventId
 }
+# Only bound by time when we have a floor; a null StartTime means "everything".
+if ($null -ne $startTime) { $filter['StartTime'] = $startTime }
 
 $events = @()
 try {
