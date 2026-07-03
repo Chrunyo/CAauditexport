@@ -231,20 +231,27 @@ if ($null -ne $checkpoint -and $checkpoint.PSObject.Properties['LastRecordId']) 
 
 # --- Query the log ---------------------------------------------------------
 
-$filter = @{
-    LogName = $LogName
-    Id      = $EventId
+# IMPORTANT: query by an EventID *range*, not a FilterHashtable Id array.
+# The Windows Event Log limits a query to 23 expressions; an Id array of more
+# than 23 values (the CA range 4868..4898 is 31) silently matches NOTHING
+# instead of erroring. A min<=EventID<=max range is only 2 expressions, and a
+# post-filter honours any non-contiguous subset the caller passed via -EventId.
+$minId = ($EventId | Measure-Object -Minimum).Minimum
+$maxId = ($EventId | Measure-Object -Maximum).Maximum
+$xpath = "*[System[(EventID>=$minId and EventID<=$maxId)"
+if ($null -ne $startTime) {
+    $sysTime = $startTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+    $xpath += " and TimeCreated[@SystemTime>='$sysTime']"
 }
-# Only bound by time when we have a floor; a null StartTime means "everything".
-if ($null -ne $startTime) { $filter['StartTime'] = $startTime }
+$xpath += ']]'
 
 $events = @()
 try {
-    $getParams = @{ FilterHashtable = $filter; ErrorAction = 'Stop' }
+    $getParams = @{ LogName = $LogName; FilterXPath = $xpath; ErrorAction = 'Stop' }
     if ($MaxEvents -gt 0) { $getParams['MaxEvents'] = $MaxEvents }
 
     $events = Get-WinEvent @getParams |
-        Where-Object { [long]$_.RecordId -gt $lastRecordId } |
+        Where-Object { ($EventId -contains $_.Id) -and ([long]$_.RecordId -gt $lastRecordId) } |
         Sort-Object RecordId
 } catch [System.Exception] {
     if ($_.Exception.Message -match 'No events were found') {
@@ -276,8 +283,10 @@ switch ($OutputFormat) {
         # Highest fidelity: export the exact record range with wevtutil so the
         # file re-opens in Event Viewer with all binary/UserData intact.
         $outFile = Join-Path $OutputDirectory "$baseName.evtx"
-        $idClause = '(' + (($EventId | ForEach-Object { "EventID=$_" }) -join ' or ') + ')'
-        $query = "*[System[$idClause and (EventRecordID>=$minRec) and (EventRecordID<=$maxRec)]]"
+        # Use the same 2-expression EventID range (see query note above) so we
+        # stay under the 23-expression event-log query limit. Bounding by the
+        # exact RecordID range keeps the export to this run's events.
+        $query = "*[System[(EventID>=$minId and EventID<=$maxId) and (EventRecordID>=$minRec) and (EventRecordID<=$maxRec)]]"
 
         & wevtutil.exe epl $LogName $outFile "/q:$query" /ow:true
         if ($LASTEXITCODE -ne 0) {
